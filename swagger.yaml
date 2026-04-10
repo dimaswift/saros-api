@@ -1,0 +1,799 @@
+openapi: 3.0.3
+
+info:
+  title: saros-api
+  description: |
+    REST API for the **saros-js** eclipse lookup library.
+
+    Covers solar and lunar eclipse lookup, Saros series navigation,
+    octal phase calculation, period duration, and rollover epoch utilities.
+
+    All timestamps are **Unix seconds** unless the endpoint name ends with `/ms`
+    (which accepts Unix milliseconds).
+    BigInt values are returned as **strings** to preserve precision.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+
+# ── Security ────────────────────────────────────────────────────────────────
+security:
+  - ApiKeyHeader: []
+  - ApiKeyQuery: []
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    ApiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+
+  # ── Reusable parameters ──────────────────────────────────────────────────
+  parameters:
+    timestamp:
+      name: timestamp
+      in: query
+      required: true
+      description: Unix timestamp in seconds.
+      schema:
+        type: string
+        example: "1744300000"
+
+    timestamp_ms:
+      name: timestamp
+      in: query
+      required: true
+      description: Unix timestamp in milliseconds.
+      schema:
+        type: string
+        example: "1744300000000"
+
+    saros_number:
+      name: saros_number
+      in: query
+      required: true
+      description: Saros series number (110–173).
+      schema:
+        type: integer
+        minimum: 110
+        maximum: 173
+        example: 136
+
+    saros_number_path:
+      name: saros_number
+      in: path
+      required: true
+      description: Saros series number (110–173).
+      schema:
+        type: integer
+        minimum: 110
+        maximum: 173
+        example: 136
+
+    resolution:
+      name: resolution
+      in: query
+      required: true
+      description: Octal resolution level (1 = 8 bins, 2 = 64 bins, 3 = 512 bins).
+      schema:
+        type: integer
+        enum: [1, 2, 3]
+        example: 2
+
+    bin:
+      name: bin
+      in: query
+      required: true
+      description: Phase bin number in [0, 16777216).
+      schema:
+        type: string
+        example: "8388608"
+
+    reference:
+      name: reference
+      in: query
+      required: true
+      description: Reference Unix timestamp in seconds (must be after `timestamp`).
+      schema:
+        type: string
+        example: "1800000000"
+
+    scale:
+      name: scale
+      in: query
+      required: true
+      description: Period scale multiplier applied to the average Saros period.
+      schema:
+        type: integer
+        minimum: 1
+        example: 1
+
+    period:
+      name: period
+      in: query
+      required: true
+      description: Zero-based inter-eclipse period index within the Saros series.
+      schema:
+        type: integer
+        minimum: 0
+        example: 5
+
+  # ── Reusable schemas ─────────────────────────────────────────────────────
+  schemas:
+    SolarInfo:
+      type: object
+      description: Metadata for a solar eclipse.
+      properties:
+        latitude_deg10:
+          type: integer
+          description: Geographic latitude × 10 of greatest eclipse.
+        longitude_deg10:
+          type: integer
+          description: Geographic longitude × 10 of greatest eclipse.
+        central_duration:
+          type: integer
+          description: Duration of central phase in seconds. 65535 means not applicable.
+        saros_number:
+          type: integer
+          description: Saros series number.
+        saros_pos:
+          type: integer
+          description: Zero-based position of this eclipse within its Saros series.
+        ecl_type:
+          type: integer
+          description: Eclipse type code (see SolarEclType in /constants).
+        sun_alt:
+          type: integer
+          description: Solar altitude in degrees at greatest eclipse.
+
+    LunarInfo:
+      type: object
+      description: Metadata for a lunar eclipse.
+      properties:
+        pen_duration:
+          type: integer
+          description: Penumbral phase duration in seconds.
+        par_duration:
+          type: integer
+          description: Partial phase duration in seconds.
+        total_duration:
+          type: integer
+          description: Total phase duration in seconds.
+        saros_number:
+          type: integer
+          description: Saros series number.
+        saros_pos:
+          type: integer
+          description: Zero-based position within its Saros series.
+        ecl_type:
+          type: integer
+          description: Eclipse type code (see LunarEclType in /constants).
+
+    EclipseEntry:
+      type: object
+      description: A single eclipse record.
+      properties:
+        unix_time:
+          type: string
+          description: Unix timestamp (seconds) of the eclipse as a string.
+          example: "1758483784"
+        global_index:
+          type: integer
+          description: Flat index into the eclipse dataset.
+          example: 1972
+        info:
+          type: object
+          properties:
+            solar:
+              $ref: '#/components/schemas/SolarInfo'
+            lunar:
+              $ref: '#/components/schemas/LunarInfo'
+        valid:
+          type: integer
+          enum: [0, 1]
+          description: 1 if this entry holds a real eclipse, 0 if invalid/out-of-range.
+
+    EclipseResult:
+      type: object
+      description: Eclipse lookup result with Saros series neighbours.
+      properties:
+        eclipse:
+          $ref: '#/components/schemas/EclipseEntry'
+        saros_prev:
+          $ref: '#/components/schemas/EclipseEntry'
+        saros_next:
+          $ref: '#/components/schemas/EclipseEntry'
+
+    SarosWindow:
+      type: object
+      description: The two bounding eclipses of a Saros series around a timestamp.
+      properties:
+        past:
+          $ref: '#/components/schemas/EclipseEntry'
+        future:
+          $ref: '#/components/schemas/EclipseEntry'
+        saros_number:
+          type: integer
+          example: 136
+
+    ScalarResult:
+      type: object
+      description: Single scalar result (BigInt returned as string).
+      properties:
+        result:
+          type: string
+          example: "1758483784"
+
+    Error400:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Missing or invalid parameter: timestamp"
+
+    Error401:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Unauthorized: invalid or missing API key"
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error401'
+
+    BadRequest:
+      description: Missing or invalid query parameter.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error400'
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Constants ──────────────────────────────────────────────────────────────
+  /constants:
+    get:
+      summary: Get all library constants
+      description: |
+        Returns every exported constant from saros-js:
+        eclipse type enumerations (`SolarEclType`, `LunarEclType`),
+        Saros lookup tables, and the average Saros period.
+      operationId: getConstants
+      tags: [Metadata]
+      responses:
+        "200":
+          description: All library constants.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  SAROS_MAX_ECLIPSES:
+                    type: integer
+                    example: 96
+                  SAROS_RECORD_SIZE:
+                    type: integer
+                    example: 194
+                  ECLIPSE_INFO_SIZE:
+                    type: integer
+                    example: 10
+                  ALIVE_SAROS_COUNT:
+                    type: integer
+                    example: 40
+                  OLDEST_SAROS:
+                    type: integer
+                    example: 156
+                  YOUNGEST_SAROS:
+                    type: integer
+                    example: 117
+                  AVERAGE_SAROS_PERIOD_SECONDS:
+                    type: string
+                    example: "568971789"
+                  SolarEclType:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    example:
+                      A: 0
+                      Aplus: 1
+                      T: 13
+                  LunarEclType:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    example:
+                      N: 0
+                      T: 7
+                  SarosOrderedByBirth:
+                    type: array
+                    items:
+                      type: integer
+                  SarosIndexLookup:
+                    type: array
+                    items:
+                      type: integer
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Saros series index ─────────────────────────────────────────────────────
+  /saros/index/{number}:
+    get:
+      summary: Get alive Saros series index
+      description: |
+        Returns the index of a Saros series number within the active
+        series array (`SarosOrderedByBirth`). Returns `-1` if the series
+        is not in the active set.
+      operationId: getAliveSarosIndex
+      tags: [Metadata]
+      parameters:
+        - name: number
+          in: path
+          required: true
+          description: Saros series number to look up.
+          schema:
+            type: integer
+            minimum: 110
+            maximum: 173
+            example: 136
+      responses:
+        "200":
+          description: Index within the alive-series array.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: integer
+                    description: Index (0-based), or -1 if not found.
+                    example: 14
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Solar eclipse lookup ───────────────────────────────────────────────────
+  /eclipse/solar/next:
+    get:
+      summary: Find next solar eclipse
+      description: |
+        Returns the first solar eclipse **at or after** the given timestamp,
+        together with its predecessor and successor within the same Saros series.
+      operationId: findNextSolarEclipse
+      tags: [Solar Eclipses]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+      responses:
+        "200":
+          description: Next solar eclipse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EclipseResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /eclipse/solar/past:
+    get:
+      summary: Find past solar eclipse
+      description: |
+        Returns the last solar eclipse **strictly before** the given timestamp,
+        together with its Saros series neighbours.
+      operationId: findPastSolarEclipse
+      tags: [Solar Eclipses]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+      responses:
+        "200":
+          description: Most recent past solar eclipse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EclipseResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /eclipse/solar/closest:
+    get:
+      summary: Find closest solar eclipse
+      description: |
+        Returns the solar eclipse closest in time to the given timestamp
+        (either past or future), together with its Saros series neighbours.
+      operationId: findClosestSolarEclipse
+      tags: [Solar Eclipses]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+      responses:
+        "200":
+          description: Closest solar eclipse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EclipseResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Lunar eclipse lookup ───────────────────────────────────────────────────
+  /eclipse/lunar/next:
+    get:
+      summary: Find next lunar eclipse
+      description: |
+        Returns the first lunar eclipse **at or after** the given timestamp,
+        together with its Saros series neighbours.
+      operationId: findNextLunarEclipse
+      tags: [Lunar Eclipses]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+      responses:
+        "200":
+          description: Next lunar eclipse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EclipseResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /eclipse/lunar/past:
+    get:
+      summary: Find past lunar eclipse
+      description: |
+        Returns the last lunar eclipse **strictly before** the given timestamp,
+        together with its Saros series neighbours.
+      operationId: findPastLunarEclipse
+      tags: [Lunar Eclipses]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+      responses:
+        "200":
+          description: Most recent past lunar eclipse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EclipseResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /eclipse/lunar/closest:
+    get:
+      summary: Find closest lunar eclipse
+      description: |
+        Returns the lunar eclipse closest in time to the given timestamp
+        (either past or future), together with its Saros series neighbours.
+      operationId: findClosestLunarEclipse
+      tags: [Lunar Eclipses]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+      responses:
+        "200":
+          description: Closest lunar eclipse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EclipseResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Saros windows ──────────────────────────────────────────────────────────
+  /saros/solar/window:
+    get:
+      summary: Find solar Saros window
+      description: |
+        Returns the two eclipses of the given solar Saros series that bracket
+        the given timestamp: the most recent past eclipse and the next future eclipse.
+      operationId: findSolarSarosWindow
+      tags: [Saros Series]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/saros_number'
+      responses:
+        "200":
+          description: Bounding solar eclipses in the Saros series.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SarosWindow'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /saros/lunar/window:
+    get:
+      summary: Find lunar Saros window
+      description: |
+        Returns the two eclipses of the given lunar Saros series that bracket
+        the given timestamp.
+      operationId: findLunarSarosWindow
+      tags: [Saros Series]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/saros_number'
+      responses:
+        "200":
+          description: Bounding lunar eclipses in the Saros series.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SarosWindow'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /saros/solar/series/{saros_number}:
+    get:
+      summary: Get all eclipses in a solar Saros series
+      description: |
+        Returns the Unix timestamps (seconds) of every solar eclipse
+        in the specified Saros series, together with the total count.
+      operationId: getSolarSarosSeries
+      tags: [Saros Series]
+      parameters:
+        - $ref: '#/components/parameters/saros_number_path'
+      responses:
+        "200":
+          description: All eclipse timestamps in the series.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  times:
+                    type: array
+                    description: Unix timestamps (as strings) of each eclipse.
+                    items:
+                      type: string
+                    example: ["1189513944", "1758483784"]
+                  count:
+                    type: integer
+                    description: Number of eclipses in the series.
+                    example: 71
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /saros/solar/period/ms:
+    get:
+      summary: Get solar Saros period duration in milliseconds
+      description: |
+        Returns the duration in milliseconds of a specific inter-eclipse
+        period (the gap between two consecutive eclipses) within a solar Saros series.
+        `period` is a zero-based index into the series.
+      operationId: getSolarSarosPeriodDurationMs
+      tags: [Saros Series]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/saros_number'
+        - $ref: '#/components/parameters/period'
+      responses:
+        "200":
+          description: Duration of the requested period in milliseconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Octal phase ────────────────────────────────────────────────────────────
+  /octal/solar/phase:
+    get:
+      summary: Calculate solar octal phase (seconds)
+      description: |
+        Quantizes a Unix timestamp (seconds) into a phase bin within the
+        surrounding solar Saros cycle.
+
+        | Resolution | Bin count |
+        |---|---|
+        | 1 | 8 |
+        | 2 | 64 |
+        | 3 | 512 |
+      operationId: calculateSolarOctalPhase
+      tags: [Octal Phase]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/saros_number'
+        - $ref: '#/components/parameters/resolution'
+      responses:
+        "200":
+          description: Phase bin as a string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /octal/solar/phase/ms:
+    get:
+      summary: Calculate solar octal phase (milliseconds)
+      description: |
+        Same as `/octal/solar/phase` but accepts the timestamp in **milliseconds**.
+      operationId: calculateSolarOctalPhaseMs
+      tags: [Octal Phase]
+      parameters:
+        - $ref: '#/components/parameters/timestamp_ms'
+        - $ref: '#/components/parameters/saros_number'
+        - $ref: '#/components/parameters/resolution'
+      responses:
+        "200":
+          description: Phase bin as a string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /octal/lunar/phase:
+    get:
+      summary: Calculate lunar octal phase (seconds)
+      description: |
+        Quantizes a Unix timestamp (seconds) into a phase bin within the
+        surrounding lunar Saros cycle.
+      operationId: calculateLunarOctalPhase
+      tags: [Octal Phase]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/saros_number'
+        - $ref: '#/components/parameters/resolution'
+      responses:
+        "200":
+          description: Phase bin as a string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /octal/lunar/phase/ms:
+    get:
+      summary: Calculate lunar octal phase (milliseconds)
+      description: |
+        Same as `/octal/lunar/phase` but accepts the timestamp in **milliseconds**.
+      operationId: calculateLunarOctalPhaseMs
+      tags: [Octal Phase]
+      parameters:
+        - $ref: '#/components/parameters/timestamp_ms'
+        - $ref: '#/components/parameters/saros_number'
+        - $ref: '#/components/parameters/resolution'
+      responses:
+        "200":
+          description: Phase bin as a string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Rollover epoch ─────────────────────────────────────────────────────────
+  /rollover/solar:
+    get:
+      summary: Get solar rollover epoch
+      description: |
+        Converts a phase `bin` number back to a Unix timestamp (seconds)
+        within the solar Saros window surrounding the given timestamp.
+
+        `bin` must be in [0, 16777216).
+      operationId: getSolarRolloverEpoch
+      tags: [Rollover Epoch]
+      parameters:
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/saros_number'
+        - $ref: '#/components/parameters/bin'
+      responses:
+        "200":
+          description: Unix timestamp corresponding to the bin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Average-period utilities ───────────────────────────────────────────────
+  /average/bin:
+    get:
+      summary: Get average-period phase bin
+      description: |
+        Calculates a phase bin using a fixed average Saros period
+        (`568971789` seconds) instead of actual eclipse lookup data.
+        Useful when exact Saros series data is not required.
+      operationId: getAverageBin
+      tags: [Average Period]
+      parameters:
+        - $ref: '#/components/parameters/reference'
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/scale'
+        - $ref: '#/components/parameters/resolution'
+      responses:
+        "200":
+          description: Phase bin as a string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /average/rollover:
+    get:
+      summary: Get average-period rollover epoch
+      description: |
+        Converts a phase `bin` back to a Unix timestamp using the fixed
+        average Saros period. The inverse of `/average/bin`.
+      operationId: getAverageRolloverEpoch
+      tags: [Average Period]
+      parameters:
+        - $ref: '#/components/parameters/reference'
+        - $ref: '#/components/parameters/timestamp'
+        - $ref: '#/components/parameters/bin'
+      responses:
+        "200":
+          description: Unix timestamp corresponding to the bin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScalarResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+# ── Tags ──────────────────────────────────────────────────────────────────────
+tags:
+  - name: Metadata
+    description: Library constants and Saros series index.
+  - name: Solar Eclipses
+    description: Find solar eclipses by timestamp.
+  - name: Lunar Eclipses
+    description: Find lunar eclipses by timestamp.
+  - name: Saros Series
+    description: Navigate Saros series windows and retrieve full series data.
+  - name: Octal Phase
+    description: Quantize a timestamp into a phase bin within a Saros cycle.
+  - name: Rollover Epoch
+    description: Convert a phase bin back to a Unix timestamp.
+  - name: Average Period
+    description: Phase calculations using the fixed average Saros period (no eclipse data lookup).
